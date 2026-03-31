@@ -1,0 +1,65 @@
+version: "3.9"
+
+services:
+  # ─────────────────────────────────────────────
+  # Mock MCP Server: Jira  (port 8081)
+  # ─────────────────────────────────────────────
+  jira-mock:
+    build: ./jira-mock
+    container_name: jira-mock
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # Mock MCP Server: Slack  (port 8082)
+  # ─────────────────────────────────────────────
+  slack-mock:
+    build: ./slack-mock
+    container_name: slack-mock
+    ports:
+      - "8082:8082"
+    environment:
+      - PORT=8082
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # FastAPI Orchestrator Backend  (port 8000)
+  # ─────────────────────────────────────────────
+  backend:
+    build: ./backend
+    container_name: bug-router-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - JIRA_MCP_URL=http://jira-mock:8081/sse
+      - SLACK_MCP_URL=http://slack-mock:8082/sse
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    depends_on:
+      jira-mock:
+        condition: service_healthy
+      slack-mock:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────────
+  # Next.js Control Room Frontend  (port 3000)
+  # ─────────────────────────────────────────────
+  frontend:
+    build: ./frontend
+    container_name: bug-router-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
