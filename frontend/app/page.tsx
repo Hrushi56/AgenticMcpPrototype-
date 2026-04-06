@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, RefObject } from "react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type LogLevel = "INFO" | "SUCCESS" | "ERROR" | "DATA";
@@ -26,7 +26,21 @@ interface Dag {
   steps: DagStep[];
 }
 
-type StepStatus = "idle" | "running" | "done" | "error";
+type StepStatus = "idle" | "running" | "done" | "error" | "pending";
+
+interface HitlRequest {
+  execution_id: string;
+  step_id: string;
+  tool: string;
+  risk: string;
+  review_payload: {
+    what: string;
+    why: string;
+    tool: string;
+    params: Record<string, unknown>;
+    context_from_prior_steps: Record<string, string>;
+  };
+}
 
 // ── Colour helpers ────────────────────────────────────────────────────────────
 const LEVEL_COLOR: Record<LogLevel, string> = {
@@ -239,7 +253,7 @@ function Terminal({
 }: {
   logs: LogEntry[];
   isRunning: boolean;
-  endRef: React.RefObject<HTMLDivElement>;
+  endRef: RefObject<HTMLDivElement>;
 }) {
   return (
     <div
@@ -319,12 +333,219 @@ function Terminal({
   );
 }
 
-// ── Preset commands ───────────────────────────────────────────────────────────
-const PRESETS = [
-  "Read ticket BUG-12 and post it to the dev channel",
-  "Get the details of BUG-12 and notify #alerts on Slack",
-  "Fetch BUG-12 from Jira and send a summary to the engineering channel",
+// ── HITL Approval Modal ───────────────────────────────────────────────────────
+function ApprovalModal({
+  request,
+  onDecision,
+  isDeciding,
+}: {
+  request: HitlRequest;
+  onDecision: (decision: "approve" | "reject", reason?: string) => void;
+  isDeciding: boolean;
+}) {
+  const { review_payload: rp, tool, step_id, execution_id } = request;
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(6,12,20,0.85)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+        backdropFilter: "blur(4px)",
+        animation: "fade-up 0.2s ease-out",
+      }}
+    >
+      <div
+        style={{
+          background: "var(--bg-surface)",
+          border: "1px solid var(--amber)",
+          borderRadius: 4,
+          width: "min(640px, 95vw)",
+          boxShadow: "0 0 40px rgba(255,163,64,0.2)",
+          overflow: "hidden",
+          animation: "fade-up 0.25s ease-out",
+        }}
+      >
+        {/* Modal Header */}
+        <div
+          style={{
+            background: "rgba(255,163,64,0.08)",
+            borderBottom: "1px solid var(--amber)",
+            padding: "12px 18px",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <span
+            style={{
+              width: 8, height: 8, borderRadius: "50%",
+              background: "var(--amber)",
+              animation: "pulse-amber 1.2s ease-in-out infinite",
+              flexShrink: 0,
+            }}
+          />
+          <span style={{ color: "var(--amber)", fontSize: 11, fontWeight: 700, letterSpacing: "0.15em" }}>
+            ⚠ HUMAN APPROVAL REQUIRED
+          </span>
+          <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+            exec: {execution_id}
+          </span>
+        </div>
+
+        {/* Modal Body */}
+        <div style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
+
+          {/* Tool + risk badge */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <code style={{
+              fontSize: 13, fontWeight: 700,
+              color: "var(--amber)",
+              background: "rgba(255,163,64,0.1)",
+              padding: "4px 12px", borderRadius: 3,
+              border: "1px solid var(--amber)",
+            }}>{tool}</code>
+            <span style={{
+              fontSize: 9, letterSpacing: "0.15em",
+              color: "var(--red)", border: "1px solid var(--red)",
+              padding: "2px 8px", borderRadius: 2,
+            }}>WRITE · SENSITIVE</span>
+            <span style={{ fontSize: 9, color: "var(--text-dim)", marginLeft: "auto" }}>{step_id}</span>
+          </div>
+
+          {/* What + Why */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ fontSize: 10, color: "var(--text-dim)", letterSpacing: "0.1em" }}>ACTION</div>
+            <div style={{
+              fontSize: 12, color: "var(--text-bright)",
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-lit)",
+              borderRadius: 3, padding: "10px 14px",
+              lineHeight: 1.6,
+            }}>{rp.what}</div>
+            <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 4 }}>{rp.why}</div>
+          </div>
+
+          {/* Params */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ fontSize: 10, color: "var(--text-dim)", letterSpacing: "0.1em" }}>EXACT PAYLOAD BEING SENT</div>
+            <pre style={{
+              fontSize: 10, color: "var(--blue)",
+              background: "#03080f",
+              border: "1px solid var(--border-lit)",
+              borderRadius: 3, padding: "10px 14px",
+              overflow: "auto", maxHeight: 140,
+              fontFamily: "var(--font-mono)",
+              lineHeight: 1.6,
+            }}>{JSON.stringify(rp.params, null, 2)}</pre>
+          </div>
+
+          {/* Prior context */}
+          {Object.keys(rp.context_from_prior_steps).length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontSize: 10, color: "var(--text-dim)", letterSpacing: "0.1em" }}>CONTEXT FROM PRIOR STEPS</div>
+              <pre style={{
+                fontSize: 10, color: "var(--green)",
+                background: "#03080f",
+                border: "1px solid var(--border-lit)",
+                borderRadius: 3, padding: "10px 14px",
+                overflow: "auto", maxHeight: 120,
+                fontFamily: "var(--font-mono)",
+                lineHeight: 1.6,
+              }}>{JSON.stringify(rp.context_from_prior_steps, null, 2)}</pre>
+            </div>
+          )}
+
+          {/* CTA Buttons */}
+          <div style={{ display: "flex", gap: 10, paddingTop: 4 }}>
+            <button
+              id="hitl-approve-btn"
+              onClick={() => onDecision("approve")}
+              disabled={isDeciding}
+              style={{
+                flex: 1,
+                background: isDeciding ? "transparent" : "var(--green)",
+                color: isDeciding ? "var(--green)" : "var(--bg)",
+                border: "1px solid var(--green)",
+                padding: "10px 0",
+                fontFamily: "var(--font-mono)",
+                fontSize: 12, fontWeight: 700,
+                letterSpacing: "0.15em",
+                cursor: isDeciding ? "not-allowed" : "pointer",
+                borderRadius: 3,
+                transition: "all 0.15s",
+              }}
+            >
+              {isDeciding ? "⠋ PROCESSING…" : "✓ APPROVE"}
+            </button>
+            <button
+              id="hitl-reject-btn"
+              onClick={() => onDecision("reject", "Rejected by operator")}
+              disabled={isDeciding}
+              style={{
+                flex: 1,
+                background: "transparent",
+                color: isDeciding ? "var(--text-dim)" : "var(--red)",
+                border: `1px solid ${isDeciding ? "var(--border)" : "var(--red)"}`,
+                padding: "10px 0",
+                fontFamily: "var(--font-mono)",
+                fontSize: 12, fontWeight: 700,
+                letterSpacing: "0.15em",
+                cursor: isDeciding ? "not-allowed" : "pointer",
+                borderRadius: 3,
+                transition: "all 0.15s",
+              }}
+            >
+              ✗ REJECT
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Preset commands (grouped by server combo) ────────────────────────────────
+const PRESET_GROUPS = [
+  {
+    label: "JIRA → SLACK",
+    color: "var(--blue)",
+    presets: [
+      "Read ticket BUG-12 and post it to the #dev channel",
+      "List all open Jira tickets and notify #alerts on Slack",
+    ],
+  },
+  {
+    label: "JIRA → GITHUB",
+    color: "var(--amber)",
+    presets: [
+      "Read ticket BUG-12 and create a GitHub issue for it in acme-corp/backend",
+      "List all open Jira tickets and create a GitHub issue tracking them in acme-corp/backend",
+    ],
+  },
+  {
+    label: "GITHUB → SHEETS",
+    color: "var(--green)",
+    presets: [
+      "Get pull request #47 from acme-corp/backend and log its details into the On-Call Log sheet of sheet_oncall_log",
+      "List open PRs in acme-corp/backend and log the summary into the Incidents sheet of sheet_bug_tracker",
+    ],
+  },
+  {
+    label: "ALL 4 SERVERS",
+    color: "var(--red)",
+    presets: [
+      "Read ticket BUG-12, create a GitHub issue for it in acme-corp/backend, log it in the Incidents sheet of sheet_bug_tracker, then notify #dev",
+      "List open Jira tickets, log them into the Summary sheet of sheet_bug_tracker, create a tracking GitHub issue in acme-corp/backend, and notify #general",
+    ],
+  },
 ];
+
+const PRESETS = PRESET_GROUPS.flatMap((g) => g.presets);
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function Home() {
@@ -334,7 +555,10 @@ export default function Home() {
   const [dag, setDag] = useState<Dag | null>(null);
   const [stepStatuses, setStepStatuses] = useState<Record<string, StepStatus>>({});
   const [isDone, setIsDone] = useState(false);
+  const [hitlRequest, setHitlRequest] = useState<HitlRequest | null>(null);
+  const [isDeciding, setIsDeciding] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
   // Auto-scroll terminal
   useEffect(() => {
@@ -409,13 +633,29 @@ export default function Home() {
                 case "step_complete":
                   setStepStatuses((p) => ({ ...p, [evt.step_id]: "done" }));
                   break;
+                case "pending_approval":
+                  setHitlRequest(evt as HitlRequest);
+                  setStepStatuses((p) => ({ ...p, [evt.step_id]: "pending" }));
+                  break;
+                case "approved":
+                  addLog("SUCCESS", `✓ Approved by human — step ${evt.step_id} will execute`);
+                  setHitlRequest(null);
+                  setIsDeciding(false);
+                  break;
+                case "rejected":
+                  addLog("ERROR", `✗ Rejected — ${evt.reason}`);
+                  setHitlRequest(null);
+                  setIsDeciding(false);
+                  setStepStatuses((p) => ({ ...p, [evt.step_id]: "error" }));
+                  break;
                 case "error":
                   addLog("ERROR", evt.message ?? "Unknown error");
-                  // Mark any running steps as errored
+                  setHitlRequest(null);
+                  setIsDeciding(false);
                   setStepStatuses((p) => {
                     const next = { ...p };
                     for (const k in next) {
-                      if (next[k] === "running") next[k] = "error";
+                      if (next[k] === "running" || next[k] === "pending") next[k] = "error";
                     }
                     return next;
                   });
@@ -437,12 +677,30 @@ export default function Home() {
       );
     } finally {
       setIsRunning(false);
+      setHitlRequest(null);
+      setIsDeciding(false);
+    }
+  }
+
+  async function handleDecision(decision: "approve" | "reject", reason?: string) {
+    if (!hitlRequest || isDeciding) return;
+    setIsDeciding(true);
+    try {
+      await fetch(`${apiUrl}/hitl/${hitlRequest.execution_id}/${decision}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason ?? "" }),
+      });
+      // Modal will be dismissed by the `approved` / `rejected` SSE event
+    } catch (e) {
+      addLog("ERROR", `Failed to send decision: ${e instanceof Error ? e.message : String(e)}`);
+      setIsDeciding(false);
     }
   }
 
   // Derive panel dot status
-  const dagDotClass = isRunning && dag ? "amber" : dag ? "green" : "";
-  const logDotClass = isRunning ? "amber" : isDone ? "green" : "";
+  const dagDotClass = hitlRequest ? "amber" : isRunning && dag ? "amber" : dag ? "green" : "";
+  const logDotClass = hitlRequest ? "amber" : isRunning ? "amber" : isDone ? "green" : "";
 
   return (
     <div
@@ -456,6 +714,15 @@ export default function Home() {
         margin: "0 auto",
       }}
     >
+      {/* ── HITL Approval Modal (renders on top of everything) ─────────────── */}
+      {hitlRequest && (
+        <ApprovalModal
+          request={hitlRequest}
+          onDecision={handleDecision}
+          isDeciding={isDeciding}
+        />
+      )}
+
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <header
         style={{
@@ -492,20 +759,26 @@ export default function Home() {
           <div
             style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 4 }}
           >
-            2-Tool Demo · Jira MCP ↔ Slack MCP
+            4-Server Gateway · Jira · Slack · GitHub · Google Sheets
           </div>
         </div>
 
         {/* Service status pills */}
-        <div style={{ display: "flex", gap: 8 }}>
-          {["JIRA :8081", "SLACK :8082", "BACKEND :8000"].map((s) => (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[
+            { label: "JIRA", port: "8081", color: "var(--blue)" },
+            { label: "SLACK", port: "8082", color: "var(--green)" },
+            { label: "GITHUB", port: "8083", color: "var(--amber)" },
+            { label: "SHEETS", port: "8084", color: "var(--green)" },
+            { label: "BACKEND", port: "8000", color: "var(--green)" },
+          ].map((s) => (
             <div
-              key={s}
+              key={s.label}
               style={{
                 fontSize: 9,
                 letterSpacing: "0.1em",
-                color: "var(--green)",
-                border: "1px solid var(--green)",
+                color: s.color,
+                border: `1px solid ${s.color}`,
                 padding: "3px 10px",
                 borderRadius: 2,
                 display: "flex",
@@ -518,11 +791,12 @@ export default function Home() {
                   width: 5,
                   height: 5,
                   borderRadius: "50%",
-                  background: "var(--green)",
+                  background: s.color,
                   display: "inline-block",
+                  animation: "pulse-amber 2s ease-in-out infinite",
                 }}
               />
-              {s}
+              {s.label} :{s.port}
             </div>
           ))}
         </div>
@@ -573,30 +847,55 @@ export default function Home() {
             </span>
           </div>
 
-          {/* Preset commands */}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-            <span style={{ fontSize: 10, color: "var(--text-dim)", marginRight: 4 }}>
-              PRESETS:
-            </span>
-            {PRESETS.map((p, i) => (
-              <button
-                key={i}
-                onClick={() => setCommand(p)}
-                disabled={isRunning}
-                style={{
-                  fontSize: 10,
-                  color: command === p ? "var(--green)" : "var(--text-dim)",
-                  border: `1px solid ${command === p ? "var(--green)" : "var(--border)"}`,
-                  background: command === p ? "var(--green-glow)" : "transparent",
-                  padding: "2px 10px",
-                  borderRadius: 2,
-                  cursor: "pointer",
-                  fontFamily: "var(--font-mono)",
-                  transition: "all 0.15s",
-                }}
-              >
-                {p.slice(0, 48)}…
-              </button>
+          {/* Preset commands grouped by server combo */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+            {PRESET_GROUPS.map((group) => (
+              <div key={group.label} style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <span
+                  style={{
+                    fontSize: 9,
+                    letterSpacing: "0.1em",
+                    color: group.color,
+                    border: `1px solid ${group.color}`,
+                    padding: "3px 8px",
+                    borderRadius: 2,
+                    flexShrink: 0,
+                    marginTop: 1,
+                    whiteSpace: "nowrap",
+                    fontFamily: "var(--font-mono)",
+                  }}
+                >
+                  {group.label}
+                </span>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                  {group.presets.map((p, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setCommand(p)}
+                      disabled={isRunning}
+                      style={{
+                        fontSize: 10,
+                        color: command === p ? group.color : "var(--text-dim)",
+                        border: `1px solid ${command === p ? group.color : "var(--border)"}`,
+                        background: command === p ? `color-mix(in srgb, ${group.color} 10%, transparent)` : "transparent",
+                        padding: "3px 10px",
+                        borderRadius: 2,
+                        cursor: isRunning ? "not-allowed" : "pointer",
+                        fontFamily: "var(--font-mono)",
+                        transition: "all 0.15s",
+                        textAlign: "left",
+                        maxWidth: 380,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={p}
+                    >
+                      {p.length > 52 ? p.slice(0, 52) + "…" : p}
+                    </button>
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
 
@@ -701,8 +1000,8 @@ export default function Home() {
           letterSpacing: "0.1em",
         }}
       >
-        <span>AUTOMATED BUG ROUTER v0.1 · AGENTIC MCP GATEWAY PoC</span>
-        <span>JIRA-MOCK · SLACK-MOCK · GEMINI 1.5 FLASH</span>
+        <span>AGENTIC MCP GATEWAY v0.2 · 4-SERVER ORCHESTRATION PoC</span>
+        <span>JIRA-MOCK · SLACK-MOCK · GITHUB-MOCK · SHEETS-MOCK · GEMINI FLASH</span>
       </footer>
     </div>
   );
